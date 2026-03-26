@@ -1,3 +1,5 @@
+## python analysevideo_web_bowler_roi_landmarks_final.py "path/to/video.mp4" --output-dir outputs --bowling-arm right --bowler-entry-side left
+
 from __future__ import annotations
 
 import json
@@ -12,9 +14,8 @@ from typing import Any
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe.framework.formats import landmark_pb2
 
-
-# Shared video helpers
 
 def ffprobe_video_info(path: str) -> dict[str, Any]:
     cmd = [
@@ -61,10 +62,7 @@ def ensure_cfr_input(input_path: str, preferred_fps: int = 60) -> tuple[str, flo
     r_fps = parse_ffmpeg_fraction(info.get("r_frame_rate", "0/0"))
     unreliable = (avg_fps < 1.0) or (abs(avg_fps - r_fps) > 1.0)
     common = [24, 25, 30, 50, 60, 90, 100, 120, 240]
-    if avg_fps >= 1.0:
-        target = min(common, key=lambda x: abs(x - avg_fps))
-    else:
-        target = preferred_fps
+    target = min(common, key=lambda x: abs(x - avg_fps)) if avg_fps >= 1.0 else preferred_fps
     must_convert = input_path.lower().endswith(".mov") or unreliable
     if not must_convert:
         return input_path, avg_fps
@@ -142,33 +140,386 @@ def load_balltrack(balltrack_json_path: str | None) -> dict[int, tuple[int, int]
     return out
 
 
-class EventDetector:
-    RELEASE_DIST_THRESH = 60
-    RELEASE_CONSEC = 3
-    RELEASE_VEL_MIN = 5.0
+def make_followthrough_curve(
+    start_px: tuple[int, int],
+    ideal_dir: tuple[float, float],
+    width: int,
+    height: int,
+) -> list[tuple[int, int]]:
+    sx, sy = start_px
+    dx, dy = ideal_dir
+    tangent_len = max(120, int(0.18 * max(width, height)))
+    end_len = max(180, int(0.28 * max(width, height)))
+    control = np.array([sx + dx * tangent_len, sy + dy * tangent_len], dtype=np.float32)
+    end = np.array([sx + dx * end_len, sy + dy * end_len + 0.08 * height], dtype=np.float32)
+    start = np.array([sx, sy], dtype=np.float32)
+    points: list[tuple[int, int]] = []
+    for t in np.linspace(0.0, 1.0, 24):
+        p = ((1 - t) ** 2) * start + 2 * (1 - t) * t * control + (t ** 2) * end
+        px = int(clamp(float(p[0]), 0, width - 1))
+        py = int(clamp(float(p[1]), 0, height - 1))
+        points.append((px, py))
+    return points
 
-    def __init__(self, fps: float, ball_track: dict[int, tuple[int, int]] | None = None, img_width: int = 1, img_height: int = 1):
+
+def draw_trajectory(
+    frame: np.ndarray,
+    points: list[tuple[int, int]],
+    color: tuple[int, int, int],
+    thickness: int,
+    label: str | None = None,
+) -> None:
+    if len(points) < 2:
+        return
+    pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+    cv2.polylines(frame, [pts], False, color, thickness, cv2.LINE_AA)
+    cv2.circle(frame, points[0], thickness + 1, color, -1, cv2.LINE_AA)
+    cv2.arrowedLine(frame, points[-2], points[-1], color, thickness, cv2.LINE_AA, tipLength=0.35)
+    if label:
+        tx = int(points[0][0] + 10)
+        ty = int(max(20, points[0][1] - 12))
+        cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+
+
+def compute_ideal_followthrough_direction(
+    release_frame: int | None,
+    ffc_frame: int | None,
+    midhip_center_by_frame: dict[int, tuple[float, float]],
+) -> tuple[float, float]:
+    if release_frame is None:
+        return (0.0, 1.0)
+
+    if ffc_frame is not None and ffc_frame in midhip_center_by_frame:
+        start_frame = ffc_frame
+    else:
+        start_frame = max(0, release_frame - 5)
+
+    frames = [i for i in range(start_frame, release_frame + 1) if i in midhip_center_by_frame]
+    if len(frames) < 2:
+        return (0.0, 1.0)
+
+    start = midhip_center_by_frame[frames[0]]
+    end = midhip_center_by_frame[frames[-1]]
+
+    dx = float(end[0] - start[0])
+    dy = float(end[1] - start[1])
+
+    dx *= 0.35
+    dy = abs(dy)
+
+    if abs(dx) + abs(dy) < 1e-6:
+        return (0.0, 1.0)
+
+    return normalize_vec(dx, dy)
+
+
+# =========================
+# NEW BOWLER-BOX SELECTION
+# =========================
+
+def rect_center(box: tuple[int, int, int, int]) -> tuple[float, float]:
+    x1, y1, x2, y2 = box
+    return ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+
+
+def rect_area(box: tuple[int, int, int, int]) -> float:
+    x1, y1, x2, y2 = box
+    return float(max(0, x2 - x1) * max(0, y2 - y1))
+
+
+def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = float(iw * ih)
+    union = rect_area(a) + rect_area(b) - inter
+    return inter / union if union > 1e-6 else 0.0
+
+
+def smooth_box(
+    prev_box: tuple[int, int, int, int] | None,
+    new_box: tuple[int, int, int, int],
+    alpha: float = 0.72,
+) -> tuple[int, int, int, int]:
+    if prev_box is None:
+        return new_box
+    out = [int(alpha * p + (1.0 - alpha) * n) for p, n in zip(prev_box, new_box)]
+    return (out[0], out[1], out[2], out[3])
+
+
+def clamp_box(
+    box: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    x1 = max(0, min(width - 2, x1))
+    y1 = max(0, min(height - 2, y1))
+    x2 = max(x1 + 2, min(width, x2))
+    y2 = max(y1 + 2, min(height, y2))
+    return (x1, y1, x2, y2)
+
+
+def expand_box(
+    box: tuple[int, int, int, int],
+    width: int,
+    height: int,
+    scale_x: float = 1.28,
+    scale_y: float = 1.22,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    cx, cy = rect_center(box)
+    bw = max(2.0, (x2 - x1) * scale_x)
+    bh = max(2.0, (y2 - y1) * scale_y)
+    nx1 = int(cx - bw * 0.5)
+    nx2 = int(cx + bw * 0.5)
+    ny1 = int(cy - bh * 0.48)
+    ny2 = int(cy + bh * 0.52)
+    return clamp_box((nx1, ny1, nx2, ny2), width, height)
+
+
+def build_motion_mask(
+    frame: np.ndarray,
+    subtractor,
+) -> np.ndarray:
+    fg = subtractor.apply(frame)
+    _, fg = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
+    kernel1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel1)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel2)
+    return fg
+
+
+def candidate_boxes_from_motion(
+    motion_mask: np.ndarray,
+    width: int,
+    height: int,
+) -> list[tuple[int, int, int, int]]:
+    contours, _ = cv2.findContours(motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes: list[tuple[int, int, int, int]] = []
+
+    min_area = int(0.006 * width * height)
+    min_h = int(0.18 * height)
+    min_w = int(0.04 * width)
+    max_w = int(0.55 * width)
+    max_h = int(0.95 * height)
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+        if w < min_w or h < min_h:
+            continue
+        if w > max_w or h > max_h:
+            continue
+
+        aspect = h / max(w, 1)
+        if aspect < 1.1:
+            continue
+
+        boxes.append((x, y, x + w, y + h))
+
+    return boxes
+
+
+def score_candidate_box(
+    box: tuple[int, int, int, int],
+    width: int,
+    height: int,
+    bowler_entry_side: str,
+    ball_pos: tuple[int, int] | None,
+    prev_box: tuple[int, int, int, int] | None,
+) -> float:
+    x1, y1, x2, y2 = box
+    cx, cy = rect_center(box)
+    bw = x2 - x1
+    bh = y2 - y1
+
+    score = 0.0
+
+    # Prefer taller human-like moving blobs
+    score += min(1.0, bh / max(1.0, 0.52 * height)) * 2.5
+    score += min(1.0, bw / max(1.0, 0.16 * width)) * 0.7
+
+    # Prefer side-of-entry
+    nx = cx / max(1.0, width)
+    if bowler_entry_side == "left":
+        score += max(0.0, 1.0 - nx) * 2.2
+    else:
+        score += max(0.0, nx) * 2.2
+
+    # Penalize very central upright figures slightly (often umpire)
+    centrality = 1.0 - min(1.0, abs(nx - 0.5) / 0.5)
+    score -= 0.8 * centrality
+
+    # Prefer upper-middle / bowler lane rather than very low frame
+    ny = cy / max(1.0, height)
+    score -= max(0.0, ny - 0.72) * 3.0
+
+    # Ball proximity helps a lot near release
+    if ball_pos is not None:
+        bx, by = ball_pos
+        dist = np.hypot(cx - bx, cy - by)
+        score += max(0.0, 1.0 - dist / max(1.0, 0.55 * width)) * 3.8
+
+    # Temporal consistency
+    if prev_box is not None:
+        score += iou(box, prev_box) * 3.2
+        pcx, pcy = rect_center(prev_box)
+        drift = np.hypot(cx - pcx, cy - pcy)
+        score += max(0.0, 1.0 - drift / max(1.0, 0.22 * width)) * 1.8
+
+    return float(score)
+
+
+def choose_bowler_box(
+    frame: np.ndarray,
+    motion_mask: np.ndarray,
+    width: int,
+    height: int,
+    bowler_entry_side: str,
+    ball_pos: tuple[int, int] | None,
+    prev_box: tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int] | None:
+    boxes = candidate_boxes_from_motion(motion_mask, width, height)
+    if not boxes:
+        return prev_box
+
+    scored = [
+        (
+            score_candidate_box(
+                box=box,
+                width=width,
+                height=height,
+                bowler_entry_side=bowler_entry_side,
+                ball_pos=ball_pos,
+                prev_box=prev_box,
+            ),
+            box,
+        )
+        for box in boxes
+    ]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_box = scored[0][1]
+    best_box = expand_box(best_box, width, height, scale_x=1.35, scale_y=1.28)
+    best_box = smooth_box(prev_box, best_box, alpha=0.72)
+    best_box = clamp_box(best_box, width, height)
+    return best_box
+
+
+def fallback_bowler_box(
+    width: int,
+    height: int,
+    ball_pos: tuple[int, int] | None,
+    bowler_entry_side: str,
+    prev_box: tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int]:
+    roi_w = int(width * 0.40)
+    roi_h = int(height * 0.78)
+    margin_x = int(width * 0.02)
+    margin_y = int(height * 0.03)
+
+    if ball_pos is None:
+        x1 = 0 if bowler_entry_side == "left" else width - roi_w
+        y1 = int(height * 0.08)
+    else:
+        bx, by = ball_pos
+        if bowler_entry_side == "left":
+            x1 = int(bx - roi_w * 0.78)
+        else:
+            x1 = int(bx - roi_w * 0.22)
+        y1 = int(by - roi_h * 0.58)
+
+    x1 = max(0, min(width - roi_w, x1))
+    y1 = max(0, min(height - roi_h, y1))
+    x2 = min(width, x1 + roi_w)
+    y2 = min(height, y1 + roi_h)
+
+    x1 = max(0, x1 - margin_x)
+    x2 = min(width, x2 + margin_x)
+    y1 = max(0, y1 - margin_y)
+    y2 = min(height, y2 + margin_y)
+
+    roi = clamp_box((x1, y1, x2, y2), width, height)
+    roi = smooth_box(prev_box, roi, alpha=0.78)
+    return clamp_box(roi, width, height)
+
+
+def crop_pose_result_to_full_frame(pose_result, roi: tuple[int, int, int, int], width: int, height: int):
+    if not pose_result.pose_landmarks:
+        return None
+    x1, y1, x2, y2 = roi
+    roi_w = max(1, x2 - x1)
+    roi_h = max(1, y2 - y1)
+    converted = landmark_pb2.NormalizedLandmarkList()
+    for lm in pose_result.pose_landmarks.landmark:
+        full_lm = converted.landmark.add()
+        full_lm.x = float((x1 + lm.x * roi_w) / width)
+        full_lm.y = float((y1 + lm.y * roi_h) / height)
+        full_lm.z = float(lm.z)
+        full_lm.visibility = float(getattr(lm, "visibility", 1.0))
+        full_lm.presence = float(getattr(lm, "presence", 1.0))
+
+    class PoseResultWrapper:
+        def __init__(self, pose_landmarks):
+            self.pose_landmarks = pose_landmarks
+
+    return PoseResultWrapper(converted)
+
+
+class EventDetector:
+    RELEASE_LOOKAHEAD_FRAMES = 5
+    RELEASE_MIN_SEP_DELTA = 3.0
+    RELEASE_MIN_BALL_SPEED = 3.0
+    RELEASE_AFTER_FFC_DELAY = 1
+
+    def __init__(
+        self,
+        fps: float,
+        ball_track: dict[int, tuple[int, int]] | None = None,
+        img_width: int = 1,
+        img_height: int = 1,
+        bowling_arm: str = "right",
+    ):
+        bowling_arm = (bowling_arm or "right").strip().lower()
+        if bowling_arm not in {"left", "right"}:
+            bowling_arm = "right"
+
         self.fps = float(fps)
         self.events = {"BFC": None, "FFC": None, "RELEASE": None}
         self.release_method = None
+
         self._ball_track = ball_track or {}
         self._img_w = img_width
         self._img_h = img_height
-        self._wrist_y: deque[float] = deque(maxlen=5)
+        self.bowling_arm = bowling_arm
+
+        self._wrist_y: deque[float] = deque(maxlen=7)
         self._la_y: deque[float] = deque(maxlen=7)
         self._ra_y: deque[float] = deque(maxlen=7)
+
         self._runup_started = False
         self._runup_phase = True
         self._mid_hip_prev = None
         self._hip_v_prev = None
         self._contacts: list[tuple[int, str]] = []
-        self._release_consec_count = 0
+
         self._prev_ball_pos = None
+        self._release_candidates: list[dict[str, float | int]] = []
 
     def update_runup_phase(self, frame_idx: int, lh, rh, la, ra) -> None:
         ankle_distance = abs(float(la.x - ra.x))
         if ankle_distance > 0.05:
             self._runup_started = True
+
         mid_hip = np.array([(lh.x + rh.x) / 2, (lh.y + rh.y) / 2], dtype=np.float32)
         if self._mid_hip_prev is not None:
             v = mid_hip - self._mid_hip_prev
@@ -179,36 +530,8 @@ class EventDetector:
             self._hip_v_prev = forward_v
         self._mid_hip_prev = mid_hip
 
-    def update_release(self, frame_idx: int, wrist) -> None:
-        self._wrist_y.append(float(wrist.y))
-        if self.events["RELEASE"] is not None:
-            return
-        wrist_px = np.array([wrist.x * self._img_w, wrist.y * self._img_h])
-        ball = self._ball_track.get(frame_idx)
-        if ball is not None:
-            ball_px = np.array(ball, dtype=np.float32)
-            dist = float(np.linalg.norm(ball_px - wrist_px))
-            ball_moving = False
-            if self._prev_ball_pos is not None:
-                disp = float(np.linalg.norm(ball_px - self._prev_ball_pos))
-                ball_moving = disp >= self.RELEASE_VEL_MIN
-            self._prev_ball_pos = ball_px
-            if dist > self.RELEASE_DIST_THRESH and ball_moving:
-                self._release_consec_count += 1
-            else:
-                self._release_consec_count = 0
-            if self._release_consec_count >= self.RELEASE_CONSEC:
-                self.events["RELEASE"] = frame_idx - self.RELEASE_CONSEC + 1
-                self.release_method = "ball_wrist"
-                return
-        if len(self._wrist_y) < 5:
-            return
-        y0 = self._wrist_y[0]
-        y4 = self._wrist_y[-1]
-        vel = y4 - y0
-        if y4 < 0.45 and vel > 0.06:
-            self.events["RELEASE"] = frame_idx
-            self.release_method = "wrist_kinematic"
+    def get_bowling_wrist(self, landmarks):
+        return landmarks[15] if self.bowling_arm == "left" else landmarks[16]
 
     def _ankle_contact_candidate(self, y_hist: deque[float]) -> bool:
         if len(y_hist) < 7:
@@ -221,8 +544,10 @@ class EventDetector:
     def update_foot_contacts(self, frame_idx: int, la, ra) -> None:
         self._la_y.append(float(la.y))
         self._ra_y.append(float(ra.y))
+
         if self._runup_phase:
             return
+
         if self.events["BFC"] is None:
             if self._ankle_contact_candidate(self._la_y):
                 self.events["BFC"] = frame_idx
@@ -232,6 +557,7 @@ class EventDetector:
                 self.events["BFC"] = frame_idx
                 self._contacts.append((frame_idx, "R"))
                 return
+
         if self.events["BFC"] is not None and self.events["FFC"] is None:
             if frame_idx - self.events["BFC"] < int(0.06 * self.fps):
                 return
@@ -244,10 +570,71 @@ class EventDetector:
                 self._contacts.append((frame_idx, "R"))
                 return
 
-    def update(self, frame_idx: int, wrist, lh, rh, la, ra) -> dict[str, int | None]:
+    def update_release(self, frame_idx: int, landmarks) -> None:
+        if self.events["RELEASE"] is not None:
+            return
+
+        if self.events["FFC"] is None:
+            return
+
+        if frame_idx < int(self.events["FFC"]) + self.RELEASE_AFTER_FFC_DELAY:
+            return
+
+        wrist = self.get_bowling_wrist(landmarks)
+        self._wrist_y.append(float(wrist.y))
+
+        ball = self._ball_track.get(frame_idx)
+        if ball is None:
+            return
+
+        wrist_px = np.array([wrist.x * self._img_w, wrist.y * self._img_h], dtype=np.float32)
+        ball_px = np.array(ball, dtype=np.float32)
+
+        dist = float(np.linalg.norm(ball_px - wrist_px))
+
+        ball_speed = 0.0
+        if self._prev_ball_pos is not None:
+            ball_speed = float(np.linalg.norm(ball_px - self._prev_ball_pos))
+        self._prev_ball_pos = ball_px
+
+        wrist_in_release_zone = float(wrist.y) < 0.62
+        if wrist_in_release_zone:
+            self._release_candidates.append(
+                {
+                    "frame": int(frame_idx),
+                    "dist": float(dist),
+                    "ball_speed": float(ball_speed),
+                    "wrist_y": float(wrist.y),
+                }
+            )
+
+        if len(self._release_candidates) < self.RELEASE_LOOKAHEAD_FRAMES:
+            return
+
+        window = self._release_candidates[-self.RELEASE_LOOKAHEAD_FRAMES:]
+        dists = [float(x["dist"]) for x in window]
+        min_idx = int(np.argmin(dists))
+        min_item = window[min_idx]
+
+        if min_idx >= len(window) - 2:
+            return
+
+        after = window[min_idx + 1:]
+        sep_growth = float(after[-1]["dist"]) - float(min_item["dist"])
+        max_ball_speed = max(float(x["ball_speed"]) for x in after) if after else 0.0
+
+        if sep_growth >= self.RELEASE_MIN_SEP_DELTA and max_ball_speed >= self.RELEASE_MIN_BALL_SPEED:
+            release_frame = int(min_item["frame"]) - 1
+            if self.events["FFC"] is not None:
+                release_frame = max(int(self.events["FFC"]) + 1, release_frame)
+            self.events["RELEASE"] = release_frame
+            self.release_method = f"local_min_wrist_sep_{self.bowling_arm}"
+            return
+
+    def update(self, frame_idx: int, landmarks, lh, rh, la, ra) -> dict[str, int | None]:
         self.update_runup_phase(frame_idx, lh, rh, la, ra)
-        self.update_release(frame_idx, wrist)
         self.update_foot_contacts(frame_idx, la, ra)
+        self.update_release(frame_idx, landmarks)
         return self.events
 
     def contact_side_for(self, event_name: str) -> str | None:
@@ -279,7 +666,6 @@ def drills_and_feedback(metrics: dict[str, Any]) -> dict[str, list[str]]:
     if elbow is not None and elbow > 20:
         feedback.append("Large elbow extension change; possible higher chucking risk. Consider checking with a qualified coach.")
         drills += ["Straight-arm band drill (light)", "Mirror work for arm path consistency"]
-
     ft = metrics.get("follow_through_label")
     if ft == "bad":
         feedback.append("After release, body weight appears to go sideways instead of transferring through the target line.")
@@ -291,9 +677,8 @@ def drills_and_feedback(metrics: dict[str, Any]) -> dict[str, list[str]]:
     elif ft == "moderate":
         feedback.append("Follow-through is slightly off line after release; aim to continue momentum more directly through the target.")
         drills += ["Target-line follow-through drill", "Step-through bowling drill"]
-    elif ft == "forward_transfer_good":
+    elif ft == "good":
         feedback.append("Follow-through direction looks efficient after release, with weight transferring well in the delivery direction.")
-
     if not feedback:
         feedback.append("No major red flags detected on these metrics. Continue building consistency and strength.")
     drills_unique = list(dict.fromkeys(drills))[:6]
@@ -304,6 +689,8 @@ def analyze_video(
     video_path: str,
     output_dir: str,
     balltrack_json_path: str | None = None,
+    bowling_arm: str = "right",
+    bowler_entry_side: str = "left",
     preferred_fps: int = 60,
 ) -> dict[str, Any]:
     os.makedirs(output_dir, exist_ok=True)
@@ -321,9 +708,18 @@ def analyze_video(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = make_writer(output_path, float(fps), width, height)
 
+    # MediaPipe is now only used after bowler box selection.
     mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    pose = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=2,
+        smooth_landmarks=True,
+        min_detection_confidence=0.70,
+        min_tracking_confidence=0.70,
+    )
     mp_drawing = mp.solutions.drawing_utils
+
+    bg_sub = cv2.createBackgroundSubtractorMOG2(history=250, varThreshold=32, detectShadows=False)
 
     angle_buffer: deque[float] = deque(maxlen=7)
     crossover_count = 0
@@ -333,7 +729,15 @@ def analyze_video(
     current_frame = 0
     written = 0
 
-    event_detector = EventDetector(fps=float(fps), ball_track=ball_track, img_width=width, img_height=height)
+    bowler_box: tuple[int, int, int, int] | None = None
+
+    event_detector = EventDetector(
+        fps=float(fps),
+        ball_track=ball_track,
+        img_width=width,
+        img_height=height,
+        bowling_arm=bowling_arm,
+    )
     events: dict[str, int | None] = {"BFC": None, "FFC": None, "RELEASE": None}
 
     spine_tilt_by_frame: dict[int, float] = {}
@@ -344,35 +748,96 @@ def analyze_video(
     elbow_angle_by_frame: dict[int, float] = {}
     landmarks_snapshot: dict[int, dict[str, Any]] = {}
     midhip_y_by_frame: dict[int, float] = {}
+    midhip_center_by_frame: dict[int, tuple[float, float]] = {}
     la_x_by_frame: dict[int, float] = {}
     ra_x_by_frame: dict[int, float] = {}
     la_y_by_frame: dict[int, float] = {}
     ra_y_by_frame: dict[int, float] = {}
-    follow_through_alignment_by_frame: dict[int, float] = {}
-    follow_through_sideways_error_by_frame: dict[int, float] = {}
     release_body_center: tuple[float, float] | None = None
+    release_body_center_px: tuple[int, int] | None = None
     followthrough_locked_label: str | None = None
     followthrough_locked_score: float | None = None
     followthrough_sideways_error: float | None = None
     followthrough_eval_done = False
     followthrough_direction_vector: tuple[float, float] | None = None
+    followthrough_ideal_curve: list[tuple[int, int]] = []
     post_release_positions: list[tuple[int, tuple[float, float]]] = []
 
-    metrics: dict[str, Any] = {"fps": float(fps), "events": {}}
+    metrics: dict[str, Any] = {
+        "fps": float(fps),
+        "events": {},
+        "bowling_arm": bowling_arm,
+        "bowler_entry_side": bowler_entry_side,
+    }
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = pose.process(image_rgb)
+
+        ball_pos = ball_track.get(current_frame) if ball_track is not None else None
+
+        motion_mask = build_motion_mask(frame, bg_sub)
+        motion_selected_box = choose_bowler_box(
+            frame=frame,
+            motion_mask=motion_mask,
+            width=width,
+            height=height,
+            bowler_entry_side=bowler_entry_side,
+            ball_pos=ball_pos,
+            prev_box=bowler_box,
+        )
+
+        if motion_selected_box is None:
+            bowler_box = fallback_bowler_box(
+                width=width,
+                height=height,
+                ball_pos=ball_pos,
+                bowler_entry_side=bowler_entry_side,
+                prev_box=bowler_box,
+            )
+        else:
+            bowler_box = motion_selected_box
+
+        x1, y1, x2, y2 = bowler_box
+        roi = frame[y1:y2, x1:x2].copy()
+
+        # Pose only inside chosen bowler box.
+        image_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        pose_result_roi = pose.process(image_rgb)
+
+        if pose_result_roi is not None and getattr(pose_result_roi, "pose_landmarks", None):
+            mp_drawing.draw_landmarks(
+                roi,
+                pose_result_roi.pose_landmarks,
+                mp_pose.POSE_CONNECTIONS,
+                mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=2, circle_radius=2),
+                mp_drawing.DrawingSpec(color=(255, 0, 255), thickness=2, circle_radius=2),
+            )
+
+        frame[y1:y2, x1:x2] = roi
+        result = crop_pose_result_to_full_frame(pose_result_roi, bowler_box, width, height)
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 80), 2)
+        cv2.putText(
+            frame,
+            "Tracked bowler box",
+            (x1 + 8, max(24, y1 + 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (180, 180, 180),
+            2,
+            cv2.LINE_AA,
+        )
+
+        if ball_pos is not None:
+            cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 5, (0, 255, 255), -1, cv2.LINE_AA)
 
         right_cross = False
         left_cross = False
         raw_angle = None
 
-        if result.pose_landmarks:
-            mp_drawing.draw_landmarks(frame, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        if result is not None and result.pose_landmarks:
             lm = result.pose_landmarks.landmark
             ls = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
             rs = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
@@ -380,32 +845,37 @@ def analyze_video(
             rh = lm[mp_pose.PoseLandmark.RIGHT_HIP]
             la = lm[mp_pose.PoseLandmark.LEFT_ANKLE]
             ra = lm[mp_pose.PoseLandmark.RIGHT_ANKLE]
-            rw = lm[mp_pose.PoseLandmark.RIGHT_WRIST]
-            re = lm[mp_pose.PoseLandmark.RIGHT_ELBOW]
+            if bowling_arm.strip().lower() == "left":
+                rw = lm[mp_pose.PoseLandmark.LEFT_WRIST]
+                re = lm[mp_pose.PoseLandmark.LEFT_ELBOW]
+            else:
+                rw = lm[mp_pose.PoseLandmark.RIGHT_WRIST]
+                re = lm[mp_pose.PoseLandmark.RIGHT_ELBOW]
             lheel = lm[mp_pose.PoseLandmark.LEFT_HEEL]
             rheel = lm[mp_pose.PoseLandmark.RIGHT_HEEL]
             lfoot = lm[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
             rfoot = lm[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX]
 
-            events = event_detector.update(current_frame, rw, lh, rh, la, ra)
+            events = event_detector.update(current_frame, lm, lh, rh, la, ra)
             release_frame = events.get("RELEASE")
 
+            mid_hip_x = float((lh.x + rh.x) / 2)
             mid_hip_y = float((lh.y + rh.y) / 2)
             midhip_y_by_frame[current_frame] = mid_hip_y
+            midhip_center_by_frame[current_frame] = (mid_hip_x, mid_hip_y)
             la_x_by_frame[current_frame] = float(la.x)
             ra_x_by_frame[current_frame] = float(ra.x)
             la_y_by_frame[current_frame] = float(la.y)
             ra_y_by_frame[current_frame] = float(ra.y)
 
             if event_detector._runup_started and event_detector._runup_phase:
-                mid_hip_x = (lh.x + rh.x) / 2
                 if ra.x < (mid_hip_x - RUNUP_THRESHOLD):
                     right_cross = True
                 if la.x > (mid_hip_x + RUNUP_THRESHOLD):
                     left_cross = True
 
             mid_shoulder = np.array([(ls.x + rs.x) / 2, (ls.y + rs.y) / 2])
-            mid_hip = np.array([(lh.x + rh.x) / 2, (lh.y + rh.y) / 2])
+            mid_hip = np.array([mid_hip_x, mid_hip_y])
             spine_vector = mid_shoulder - mid_hip
             vertical_vector = np.array([0, -1])
             norm_spine = np.linalg.norm(spine_vector)
@@ -454,22 +924,34 @@ def analyze_video(
             if events.get("RELEASE") == current_frame:
                 cv2.putText(frame, "RELEASE", (40, 280), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 3, cv2.LINE_AA)
 
-            if release_frame is not None and current_frame == release_frame:
-                release_body_center = (float((lh.x + rh.x) / 2), float((lh.y + rh.y) / 2))
-                b_now = ball_track.get(current_frame) if ball_track is not None else None
-                b_next = ball_track.get(current_frame + 1) if ball_track is not None else None
-                b_prev = ball_track.get(current_frame - 1) if ball_track is not None else None
-                if b_now is not None and b_next is not None:
-                    ideal_dx = float(b_next[0] - b_now[0])
-                    ideal_dy = float(b_next[1] - b_now[1])
-                elif b_prev is not None and b_now is not None:
-                    ideal_dx = float(b_now[0] - b_prev[0])
-                    ideal_dy = float(b_now[1] - b_prev[1])
-                else:
-                    ideal_dx = 0.0
-                    ideal_dy = 1.0
-                followthrough_direction_vector = normalize_vec(ideal_dx, ideal_dy)
-                post_release_positions = []
+            if (
+                release_frame is not None
+                and release_body_center is None
+                and current_frame >= release_frame
+            ):
+                release_body_center = (
+                    float((lh.x + rh.x) / 2),
+                    float((lh.y + rh.y) / 2),
+                )
+                release_body_center_px = (
+                    int(release_body_center[0] * width),
+                    int(release_body_center[1] * height),
+                )
+
+                followthrough_direction_vector = compute_ideal_followthrough_direction(
+                    release_frame=release_frame,
+                    ffc_frame=events.get("FFC"),
+                    midhip_center_by_frame=midhip_center_by_frame,
+                )
+
+                followthrough_ideal_curve = make_followthrough_curve(
+                    release_body_center_px,
+                    followthrough_direction_vector,
+                    width,
+                    height,
+                )
+
+                post_release_positions = [(current_frame, release_body_center)]
                 followthrough_eval_done = False
                 followthrough_locked_label = None
                 followthrough_locked_score = None
@@ -479,52 +961,42 @@ def analyze_video(
                 angle_buffer.append(raw_angle)
                 smoothed_angle = sum(angle_buffer) / len(angle_buffer)
                 spine_tilt_smoothed_by_frame[current_frame] = float(smoothed_angle)
-
                 if smoothed_angle < 40:
                     feedback = "Good alignment"
                     color = (0, 255, 0)
-                elif 40 <= smoothed_angle < 50:
+                elif smoothed_angle < 50:
                     feedback = "Moderate lateral flexion"
                     color = (0, 165, 255)
                 else:
                     feedback = "Excessive lateral flexion - Injury Risk"
                     color = (0, 0, 255)
-
                 angle_text = f"Spine Tilt: {smoothed_angle:.1f} deg | {feedback}"
                 cv2.putText(frame, angle_text, (40, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 3, cv2.LINE_AA)
-
             elif release_frame is not None and current_frame > release_frame:
                 current_center = (float((lh.x + rh.x) / 2), float((lh.y + rh.y) / 2))
                 if release_body_center is not None:
                     post_release_positions.append((current_frame, current_center))
-
                 if (
                     release_body_center is not None
                     and followthrough_direction_vector is not None
                     and not followthrough_eval_done
-                    and len(post_release_positions) >= 6
+                    and len(post_release_positions) >= 4
                 ):
                     _, end_center = post_release_positions[-1]
                     move_dx = float(end_center[0] - release_body_center[0])
                     move_dy = float(end_center[1] - release_body_center[1])
                     actual_dir = normalize_vec(move_dx, move_dy)
                     ideal_dir = followthrough_direction_vector
-
                     alignment = dot2(actual_dir, ideal_dir)
                     sideways_error = cross_mag2(actual_dir, ideal_dir)
-
                     followthrough_locked_score = float(alignment)
                     followthrough_sideways_error = float(sideways_error)
-                    follow_through_alignment_by_frame[current_frame] = float(alignment)
-                    follow_through_sideways_error_by_frame[current_frame] = float(sideways_error)
-
                     if alignment >= 0.85 and sideways_error <= 0.25:
                         followthrough_locked_label = "good"
                     elif alignment >= 0.60 and sideways_error <= 0.50:
                         followthrough_locked_label = "moderate"
                     else:
                         followthrough_locked_label = "bad"
-
                     followthrough_eval_done = True
 
                 if followthrough_locked_label == "good":
@@ -540,14 +1012,39 @@ def analyze_video(
                     ft_feedback = "Evaluating follow-through..."
                     ft_color = (255, 255, 255)
 
-                cv2.putText(frame, f"Follow-through: {ft_feedback}", (40, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, ft_color, 3, cv2.LINE_AA)
+                cv2.putText(
+                    frame,
+                    f"Follow-through: {ft_feedback}",
+                    (40, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    ft_color,
+                    3,
+                    cv2.LINE_AA,
+                )
+
+                if release_body_center_px is not None and followthrough_ideal_curve:
+                    draw_trajectory(frame, followthrough_ideal_curve, (0, 255, 0), 3, "Ideal trajectory")
+
+                if release_body_center_px is not None and len(post_release_positions) >= 1:
+                    actual_curve = [release_body_center_px]
+                    for _, pos in post_release_positions:
+                        actual_curve.append((int(pos[0] * width), int(pos[1] * height)))
+
+                    if len(actual_curve) > 18:
+                        interior = actual_curve[1:]
+                        step = max(1, len(interior) // 16)
+                        sampled = interior[::step]
+                        actual_curve = [release_body_center_px] + sampled[-16:]
+
+                    if len(actual_curve) >= 2:
+                        draw_trajectory(frame, actual_curve, (0, 0, 255), 3, "Actual trajectory")
 
         crossed_now = right_cross or left_cross
         if crossed_now and not crossed_prev:
             crossover_count += 1
             crossover_frames.append(current_frame)
         crossed_prev = crossed_now
-
         if crossover_count > 5:
             cv2.putText(frame, "Run-up Issue: Leg Cross-Over Detected", (40, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3, cv2.LINE_AA)
 
@@ -569,6 +1066,7 @@ def analyze_video(
             events_out[k] = ev
     metrics["events"] = events_out
     metrics["balltrack_loaded"] = ball_track is not None
+    metrics["umpire_mitigation"] = "motion_box_plus_ball_side_tracking"
 
     def sample_at(frame_idx: int | None, series: dict[int, float]) -> float | None:
         if frame_idx is None:
@@ -586,7 +1084,6 @@ def analyze_video(
     metrics["lateral_flexion_ffc_smoothed_deg"] = sample_at(ffc, spine_tilt_smoothed_by_frame)
     metrics["lateral_flexion_release_smoothed_deg"] = sample_at(rel, spine_tilt_smoothed_by_frame)
     metrics["hip_shoulder_separation_ffc_deg"] = sample_at(ffc, hip_shoulder_sep_by_frame)
-
     if ffc is not None:
         w = int(0.10 * fps)
         vals = [hip_shoulder_sep_by_frame[i] for i in range(max(0, ffc - w), ffc + w + 1) if i in hip_shoulder_sep_by_frame]
@@ -665,7 +1162,14 @@ def analyze_video(
             a = np.array([la_x_by_frame[ffc] * width, la_y_by_frame[ffc] * height], dtype=np.float32)
             b = np.array([ra_x_by_frame[ffc] * width, ra_y_by_frame[ffc] * height], dtype=np.float32)
             metrics["stride_length_ffc_px"] = float(np.linalg.norm(a - b))
-            metrics["stride_length_ffc_norm"] = float(np.linalg.norm(np.array([la_x_by_frame[ffc] - ra_x_by_frame[ffc], la_y_by_frame[ffc] - ra_y_by_frame[ffc]], dtype=np.float32)))
+            metrics["stride_length_ffc_norm"] = float(
+                np.linalg.norm(
+                    np.array(
+                        [la_x_by_frame[ffc] - ra_x_by_frame[ffc], la_y_by_frame[ffc] - ra_y_by_frame[ffc]],
+                        dtype=np.float32,
+                    )
+                )
+            )
 
     metrics["com_forward_travel_post_release_norm"] = None
     metrics["back_leg_recovery_score"] = None
@@ -688,7 +1192,6 @@ def analyze_video(
                 back_x_rel = la_x_by_frame[rel]
                 back_x_end = la_x_by_frame[endf]
             metrics["back_leg_recovery_score"] = float((back_x_end - back_x_rel) / (abs(front_x_rel - back_x_rel) + 1e-6))
-
         if followthrough_locked_score is not None:
             metrics["follow_through_alignment"] = float(followthrough_locked_score)
         if followthrough_sideways_error is not None:
@@ -739,15 +1242,27 @@ def analyze_video(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Web-safe bowling action analysis")
+    parser = argparse.ArgumentParser(description="Bowling action analysis with motion-based bowler selection")
     parser.add_argument("video_path")
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--balltrack-json", default=None)
+    parser.add_argument("--bowling-arm", choices=["left", "right"], default=None)
+    parser.add_argument("--bowler-entry-side", choices=["left", "right"], default=None)
     args = parser.parse_args()
+
+    bowling_arm = args.bowling_arm
+    while bowling_arm not in {"left", "right"}:
+        bowling_arm = input("Is the bowler left or right handed? Type 'left' or 'right': ").strip().lower()
+
+    bowler_entry_side = args.bowler_entry_side
+    while bowler_entry_side not in {"left", "right"}:
+        bowler_entry_side = input("Which side does the bowler enter from? Type 'left' or 'right': ").strip().lower()
 
     result = analyze_video(
         video_path=args.video_path,
         output_dir=args.output_dir,
         balltrack_json_path=args.balltrack_json,
+        bowling_arm=bowling_arm,
+        bowler_entry_side=bowler_entry_side,
     )
     print(json.dumps(result, indent=2))
