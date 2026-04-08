@@ -1,11 +1,13 @@
 {
-  "input_path": "sample2.mp4",
-  "output_path": "outputs/analysed_sample2.mp4",
+  "input_path": "D:\\cricket_coach\\AI-Bowling-Coach\\uploads\\Sample2.mp4",
+  "output_path": "D:\\cricket_coach\\AI-Bowling-Coach\\outputs\\analysed_Sample2.mp4",
   "metrics": {
     "fps": 30.0,
     "events": {},
     "bowling_arm": "right",
-    "balltrack_loaded": true,
+    "bowler_entry_side": "left",
+    "balltrack_loaded": false,
+    "umpire_mitigation": "motion_box_plus_ball_side_tracking",
     "lateral_flexion_bfc_deg": null,
     "lateral_flexion_ffc_deg": null,
     "lateral_flexion_release_deg": null,

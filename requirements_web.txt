@@ -1,7 +1,0 @@
-opencv-python-headless
-numpy
-mediapipe
-ultralytics
-torch
-torchvision
-ffmpeg-python
