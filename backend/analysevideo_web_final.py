@@ -124,13 +124,11 @@ def parse_ffmpeg_fraction(frac: str) -> float:
     return num / den if den != 0 else 0.0
 
 
-def transcode_to_cfr(input_path: str, target_fps: int, out_path: str) -> None:
+def transcode_for_web(input_path: str, out_path: str) -> None:
     ffmpeg = _ffmpeg_executable("ffmpeg")
     cmd = [
         ffmpeg, "-y",
         "-i", input_path,
-        "-vf", f"fps={target_fps}",
-        "-vsync", "cfr",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
@@ -138,7 +136,7 @@ def transcode_to_cfr(input_path: str, target_fps: int, out_path: str) -> None:
     ]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
-        raise RuntimeError(f"ffmpeg transcode failed:\n{p.stderr}")
+        raise RuntimeError(f"ffmpeg web transcode failed:\n{p.stderr}")
 
 
 def ensure_cfr_input(input_path: str, preferred_fps: int = 60) -> tuple[str, float]:
@@ -781,6 +779,7 @@ def analyze_video(
     os.makedirs(output_dir, exist_ok=True)
     video_path = str(Path(video_path))
     stem = Path(video_path).stem
+    raw_output_path = os.path.join(output_dir, f"analysed_{stem}_raw.mp4")
     output_path = os.path.join(output_dir, f"analysed_{stem}.mp4")
 
     cfr_input_path, fps = ensure_cfr_input(video_path, preferred_fps=preferred_fps)
@@ -791,7 +790,7 @@ def analyze_video(
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = make_writer(output_path, float(fps), width, height)
+    out = make_writer(raw_output_path, float(fps), width, height)
 
     # MediaPipe is now only used after bowler box selection.
     mp_pose = mp.solutions.pose
@@ -1140,6 +1139,11 @@ def analyze_video(
     cap.release()
     out.release()
     pose.close()
+
+    # Convert OpenCV output into browser-safe MP4
+    transcode_for_web(raw_output_path, output_path)
+    if os.path.exists(raw_output_path):
+        os.remove(raw_output_path)   
 
     events = event_detector.events
     events_out = {}
