@@ -1,0 +1,50 @@
+{
+  "input_path": "D:\\cricket_coach\\AI-Bowling-Coach\\uploads\\Sample3.mp4",
+  "output_path": "D:\\cricket_coach\\AI-Bowling-Coach\\outputs\\analysed_Sample3.mp4",
+  "metrics": {
+    "fps": 30.0,
+    "events": {},
+    "bowling_arm": "right",
+    "bowler_entry_side": "left",
+    "balltrack_loaded": false,
+    "umpire_mitigation": "motion_box_plus_ball_side_tracking",
+    "lateral_flexion_bfc_deg": null,
+    "lateral_flexion_ffc_deg": null,
+    "lateral_flexion_release_deg": null,
+    "lateral_flexion_bfc_smoothed_deg": null,
+    "lateral_flexion_ffc_smoothed_deg": null,
+    "lateral_flexion_release_smoothed_deg": null,
+    "hip_shoulder_separation_ffc_deg": null,
+    "hip_shoulder_separation_ffc_peak_deg": null,
+    "shoulder_line_angle_ffc_deg": null,
+    "hip_line_angle_ffc_deg": null,
+    "shoulder_line_angle_release_deg": null,
+    "hip_line_angle_release_deg": null,
+    "elbow_angle_min_deg": null,
+    "elbow_angle_max_deg": null,
+    "elbow_extension_change_deg": null,
+    "trunk_lean_ffc_smoothed_deg": null,
+    "trunk_lean_release_smoothed_deg": null,
+    "alignment_label": null,
+    "back_foot_angle_bfc_deg": null,
+    "front_foot_angle_ffc_deg": null,
+    "stride_length_ffc_px": null,
+    "stride_length_ffc_norm": null,
+    "bfc_side": null,
+    "ffc_side": null,
+    "com_forward_travel_post_release_norm": null,
+    "back_leg_recovery_score": null,
+    "follow_through_alignment": null,
+    "follow_through_sideways_error": null,
+    "follow_through_label": null,
+    "ratings": {}
+  },
+  "coach": {
+    "feedback": [
+      "No major red flags detected on these metrics. Continue building consistency and strength."
+    ],
+    "drills": []
+  },
+  "crossover_count": 0,
+  "crossover_frames": []
+}
