@@ -509,8 +509,168 @@ if st.session_state.get("analysis_complete"):
                 )
 
     # ── ADVANCED METRICS ──
-    with st.expander("📊 Advanced Metrics (Raw Data)"):
-        st.json(metrics)
+    with st.expander("📊 Detailed Biomechanical Measurements"):
+        st.markdown("""
+        <style>
+        .metric-detail-card {
+          background: linear-gradient(135deg, rgba(0, 200, 255, 0.06) 0%, rgba(0, 200, 255, 0.02) 100%);
+          border-left: 4px solid var(--cyan);
+          padding: 16px;
+          margin-bottom: 16px;
+          border-radius: 8px;
+          border: 1px solid rgba(0, 200, 255, 0.15);
+        }
+        
+        .metric-detail-label {
+          font-family: 'Oxanium', monospace;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--cyan);
+          margin-bottom: 6px;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+        }
+        
+        .metric-detail-value {
+          font-size: 16px;
+          color: var(--white);
+          font-weight: 500;
+          margin-bottom: 4px;
+        }
+        
+        .metric-detail-desc {
+          font-size: 12px;
+          color: rgba(232, 244, 248, 0.6);
+          line-height: 1.5;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # Helper function to format metric values
+        def format_metric(value, label=""):
+            if value is None or str(value).upper() == "NONE":
+                return "Not measured"
+            if isinstance(value, bool):
+                return "Yes" if value else "No"
+            if isinstance(value, (int, float)):
+                if isinstance(value, float) and value > 1000:
+                    return f"{value:.2f}"
+                elif isinstance(value, float):
+                    return f"{value:.2f}°" if "angle" in label.lower() or "deg" in label.lower() else f"{value:.2f}"
+                return str(value)
+            return str(value)
+        
+        # Display metrics in organized sections
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Run-up & Balance
+            st.markdown("<h4 style='color: var(--cyan); margin-top: 0;'>🏃 Run-up & Balance</h4>", unsafe_allow_html=True)
+            
+            for key, value in metrics.items():
+                if "run_up" in key.lower() or "stride" in key.lower():
+                    nice_label = key.replace("_", " ").title()
+                    st.markdown(f"""
+                    <div class='metric-detail-card'>
+                        <div class='metric-detail-label'>{nice_label}</div>
+                        <div class='metric-detail-value'>{format_metric(value, key)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        with col2:
+            # Release & Timing
+            st.markdown("<h4 style='color: var(--cyan); margin-top: 0;'>⏱️ Release & Timing</h4>", unsafe_allow_html=True)
+            
+            for key, value in metrics.items():
+                if "release" in key.lower() or "timing" in key.lower():
+                    nice_label = key.replace("_", " ").title()
+                    st.markdown(f"""
+                    <div class='metric-detail-card'>
+                        <div class='metric-detail-label'>{nice_label}</div>
+                        <div class='metric-detail-value'>{format_metric(value, key)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Body Alignment
+        st.markdown("<h4 style='color: var(--cyan);'>🏋️ Body Alignment & Rotation</h4>", unsafe_allow_html=True)
+        body_col1, body_col2 = st.columns(2)
+        
+        with body_col1:
+            for key, value in metrics.items():
+                if "shoulder" in key.lower() or "hip" in key.lower() or "spine" in key.lower():
+                    nice_label = key.replace("_", " ").title()
+                    st.markdown(f"""
+                    <div class='metric-detail-card'>
+                        <div class='metric-detail-label'>{nice_label}</div>
+                        <div class='metric-detail-value'>{format_metric(value, key)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        with body_col2:
+            for key, value in metrics.items():
+                if "flexion" in key.lower() or "extension" in key.lower() or "rotation" in key.lower():
+                    nice_label = key.replace("_", " ").title()
+                    st.markdown(f"""
+                    <div class='metric-detail-card'>
+                        <div class='metric-detail-label'>{nice_label}</div>
+                        <div class='metric-detail-value'>{format_metric(value, key)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Events & Other Metrics
+        st.markdown("<h4 style='color: var(--cyan);'>📊 Key Frames & Events</h4>", unsafe_allow_html=True)
+        
+        if "events" in metrics:
+            events = metrics.get("events", {})
+            event_cols = st.columns(3)
+            col_idx = 0
+            
+            for event_name, event_data in events.items():
+                if isinstance(event_data, dict):
+                    with event_cols[col_idx % 3]:
+                        st.markdown(f"""
+                        <div class='metric-detail-card'>
+                            <div class='metric-detail-label'>{event_name.replace('_', ' ').upper()}</div>
+                        """, unsafe_allow_html=True)
+                        
+                        for sub_key, sub_value in event_data.items():
+                            nice_key = sub_key.replace("_", " ").title()
+                            st.markdown(f"""
+                            <div style='margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(0, 200, 255, 0.1);'>
+                                <div class='metric-detail-desc'><strong>{nice_key}:</strong> {format_metric(sub_value, sub_key)}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
+                        col_idx += 1
+        
+        # Bowling Configuration
+        st.markdown("<h4 style='color: var(--cyan);'>⚙️ Bowling Configuration</h4>", unsafe_allow_html=True)
+        config_col1, config_col2 = st.columns(2)
+        
+        with config_col1:
+            for key in ["bowling_arm", "bowler_entry_side"]:
+                if key in metrics:
+                    nice_label = key.replace("_", " ").title()
+                    value = metrics[key]
+                    st.markdown(f"""
+                    <div class='metric-detail-card'>
+                        <div class='metric-detail-label'>{nice_label}</div>
+                        <div class='metric-detail-value' style='text-transform: capitalize;'>{format_metric(value, key)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        with config_col2:
+            for key in ["balltrack_loaded", "umpire_mitigation"]:
+                if key in metrics:
+                    nice_label = key.replace("_", " ").title()
+                    value = metrics[key]
+                    st.markdown(f"""
+                    <div class='metric-detail-card'>
+                        <div class='metric-detail-label'>{nice_label}</div>
+                        <div class='metric-detail-value'>{format_metric(value, key)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
     # ── DOWNLOAD REPORT ──
     report_path = result.get("report_json_path")
@@ -518,7 +678,7 @@ if st.session_state.get("analysis_complete"):
     if report_bytes:
         st.markdown("<div style='margin-top: 40px;'></div>", unsafe_allow_html=True)
         st.download_button(
-            "⬇️ Download Full Analysis Report",
+            "⬇️ Download Full Analysis Report ",
             data=report_bytes,
             file_name=Path(report_path).name,
             mime="application/json",
