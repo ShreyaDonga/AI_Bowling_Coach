@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 from pathlib import Path
+from backend.analysevideo_web_final import analyze_video
 
 APP_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP_DIR))

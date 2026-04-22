@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BowlFast.AI — AI Fast Bowling Coach</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@300;400;500;600;700;800&family=Syne:wght@400;500;700;800&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #020408;
+  --surface: #060b12;
+  --panel: #0a1220;
+  --border: rgba(0, 200, 255, 0.08);
+  --border-bright: rgba(0, 200, 255, 0.22);
+  --cyan: #00c8ff;
+  --cyan-dim: rgba(0, 200, 255, 0.12);
+  --cyan-glow: rgba(0, 200, 255, 0.35);
+  --green: #00ff9d;
+  --green-dim: rgba(0, 255, 157, 0.1);
+  --orange: #ff6b2b;
+  --white: #e8f4f8;
+  --muted: rgba(232, 244, 248, 0.4);
+  --very-muted: rgba(232, 244, 248, 0.18);
+  --grid-line: rgba(0, 200, 255, 0.04);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--white);
+  font-family: 'Syne', sans-serif;
+  font-weight: 400;
+  overflow-x: hidden;
+  cursor: none;
+}
+
+/* ── CURSOR ── */
+#cursor {
+  position: fixed;
+  width: 8px; height: 8px;
+  background: var(--cyan);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 9999;
+  box-shadow: 0 0 12px var(--cyan), 0 0 24px var(--cyan-glow);
+  transition: transform 0.1s;
+}
+#cursor-trail {
+  position: fixed;
+  width: 32px; height: 32px;
+  border: 1px solid var(--cyan);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 9998;
+  opacity: 0.5;
+  transition: left 0.18s ease, top 0.18s ease, width 0.3s, height 0.3s, opacity 0.3s;
+}
+
+/* ── GRID BACKGROUND ── */
+.grid-bg {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, black 20%, transparent 100%);
+}
+
+/* ── SCANLINE OVERLAY ── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+}
+
+/* ── NAV ── */
+nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 56px;
+  transition: background 0.4s, border-color 0.4s;
+  border-bottom: 1px solid transparent;
+}
+nav.scrolled {
+  background: rgba(2, 4, 8, 0.9);
+  border-color: var(--border);
+  backdrop-filter: blur(20px);
+}
+
+.logo {
+  font-family: 'Oxanium', monospace;
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: 2px;
+  text-decoration: none;
+  color: var(--white);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.logo-bowl { color: var(--cyan); }
+.logo-fast { color: var(--white); }
+.logo-dot { color: var(--green); }
+.logo-ai { color: var(--cyan); font-weight: 300; }
+
+.nav-center {
+  display: flex;
+  gap: 40px;
+  list-style: none;
+}
+.nav-center a {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.2s;
+  position: relative;
+}
+.nav-center a::after {
+  content: '';
+  position: absolute;
+  bottom: -4px; left: 0;
+  width: 0; height: 1px;
+  background: var(--cyan);
+  transition: width 0.3s;
+}
+.nav-center a:hover { color: var(--cyan); }
+.nav-center a:hover::after { width: 100%; }
+
+.nav-btn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--cyan);
+  padding: 10px 24px;
+  text-decoration: none;
+  font-weight: 500;
+  position: relative;
+  clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%);
+  transition: background 0.2s, transform 0.2s;
+  cursor: pointer;
+  border: none;
+}
+.nav-btn:hover { 
+  background: var(--green);
+  transform: scale(1.05);
+}
+
+/* ── HERO ── */
+.hero {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  padding: 100px 56px 80px;
+  overflow: hidden;
+  z-index: 2;
+}
+
+/* Radial glow behind hero */
+.hero-glow {
+  position: absolute;
+  top: -10%;
+  right: -15%;
+  width: 900px; height: 900px;
+  background: radial-gradient(circle, rgba(0,200,255,0.07) 0%, transparent 65%);
+  pointer-events: none;
+  animation: breathe 8s ease-in-out infinite;
+}
+.hero-glow-2 {
+  position: absolute;
+  bottom: -20%;
+  left: -10%;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(0,255,157,0.05) 0%, transparent 65%);
+  pointer-events: none;
+  animation: breathe 10s ease-in-out infinite reverse;
+}
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.7; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+.hero-content { position: relative; z-index: 2; max-width: 780px; }
+
+.hero-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-bright);
+  padding: 8px 18px;
+  margin-bottom: 48px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  opacity: 0;
+  animation: fadeIn 0.6s 0.3s forwards;
+  background: rgba(0, 200, 255, 0.04);
+}
+.hero-tag-pulse {
+  width: 6px; height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.hero-h1 {
+  font-family: 'Oxanium', monospace;
+  font-weight: 800;
+  font-size: clamp(58px, 8.5vw, 130px);
+  line-height: 0.9;
+  letter-spacing: -2px;
+  opacity: 0;
+  animation: slideUp 0.8s 0.5s forwards;
+}
+.hero-h1 .line-1 { display: block; color: var(--white); }
+.hero-h1 .line-2 {
+  display: block;
+  color: transparent;
+  -webkit-text-stroke: 1.5px var(--cyan);
+  opacity: 0.6;
+}
+.hero-h1 .line-3 {
+  display: block;
+  color: transparent;
+  -webkit-text-stroke: 1.5px var(--green);
+  opacity: 0.6;
+}
+.hero-p {
+  font-size: clamp(14px, 1.2vw, 18px);
+  line-height: 1.8;
+  color: var(--muted);
+  margin: 32px 0;
+  max-width: 520px;
+  opacity: 0;
+  animation: slideUp 0.8s 0.7s forwards;
+}
+
+.hero-btns {
+  display: flex;
+  gap: 16px;
+  margin-top: 48px;
+  opacity: 0;
+  animation: slideUp 0.8s 0.9s forwards;
+}
+
+.btn {
+  padding: 12px 32px;
+  border: none;
+  border-radius: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--cyan) 0%, var(--green) 100%);
+  color: var(--bg);
+  box-shadow: 0 0 20px rgba(0, 200, 255, 0.3);
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 200, 255, 0.4);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--white);
+  border: 1px solid var(--border-bright);
+}
+.btn-secondary:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ── HOW IT WORKS ── */
+.sec-pad { padding: 120px 56px; }
+.eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  margin-bottom: 16px;
+  display: block;
+}
+.sec-h2 {
+  font-family: 'Oxanium', monospace;
+  font-weight: 700;
+  font-size: clamp(32px, 5vw, 68px);
+  line-height: 1.1;
+  margin-bottom: 32px;
+  opacity: 0;
+}
+.reveal { opacity: 0; }
+.reveal.on {
+  animation: slideUp 0.8s forwards;
+}
+.reveal.d1 { animation-delay: 0.1s; }
+.reveal.d2 { animation-delay: 0.2s; }
+.reveal.d3 { animation-delay: 0.3s; }
+.reveal.d4 { animation-delay: 0.4s; }
+
+.how-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 32px;
+  margin-top: 48px;
+}
+.how-card {
+  padding: 32px;
+  background: rgba(0, 200, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: all 0.3s;
+}
+.how-card:hover {
+  border-color: var(--cyan);
+  background: rgba(0, 200, 255, 0.08);
+  transform: translateY(-4px);
+}
+.how-card h3 {
+  font-family: 'Oxanium', monospace;
+  font-size: 20px;
+  margin-bottom: 12px;
+  color: var(--white);
+}
+.how-card p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* ── FEATURES ── */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 40px;
+  align-items: center;
+  margin-top: 60px;
+}
+.feature-item h4 {
+  font-family: 'Oxanium', monospace;
+  font-size: 18px;
+  margin-bottom: 12px;
+  color: var(--green);
+}
+.feature-item p {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+/* ── BIOMECHANICS SECTION ── */
+.biomechanics-section {
+  position: relative;
+  padding: 0;
+  background: linear-gradient(135deg, rgba(0,200,255,0.05) 0%, rgba(0,255,157,0.02) 100%);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.bio-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 60px;
+  align-items: center;
+  padding: 80px 56px;
+}
+
+.bio-left { position: relative; z-index: 2; }
+.bio-right { position: relative; z-index: 2; }
+
+.bio-h2 {
+  font-family: 'Oxanium', monospace;
+  font-weight: 800;
+  font-size: 56px;
+  line-height: 1.1;
+  margin-bottom: 32px;
+}
+
+.bio-p {
+  font-size: 16px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+
+.bio-list-item {
+  padding: 16px 0;
+  border-left: 3px solid var(--cyan);
+  padding-left: 20px;
+  margin-bottom: 20px;
+}
+
+.bio-list-item strong {
+  display: block;
+  color: var(--white);
+  margin-bottom: 6px;
+  font-size: 16px;
+}
+
+.bio-list-item p {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* Metrics display */
+.bio-metrics {
+  background: linear-gradient(135deg, rgba(0,200,255,0.08) 0%, rgba(0,200,255,0.04) 100%);
+  border: 1px solid rgba(0,200,255,0.2);
+  border-radius: 12px;
+  padding: 32px;
+  backdrop-filter: blur(10px);
+}
+
+.bio-header {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--cyan);
+  margin-bottom: 24px;
+  text-transform: uppercase;
+}
+
+.bio-metric {
+  margin-bottom: 24px;
+}
+
+.bio-m-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.bio-m-name {
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: rgba(232, 244, 248, 0.5);
+}
+
+.bio-m-val {
+  font-family: 'Oxanium', monospace;
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.bio-m-val.ok { color: var(--green); }
+.bio-m-val.warn { color: var(--orange); }
+.bio-m-val.info { color: var(--cyan); }
+
+.bio-bar-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(0, 200, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.bio-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  animation: fillBar 1.2s ease-out forwards;
+}
+
+.bio-bar-fill.ok { background: var(--green); }
+.bio-bar-fill.warn { background: var(--orange); }
+.bio-bar-fill.info { background: var(--cyan); }
+
+@keyframes fillBar {
+  from { width: 0; }
+}
+
+.bio-feedback-box {
+  background: linear-gradient(135deg, rgba(0,200,255,0.1) 0%, rgba(0,255,157,0.05) 100%);
+  border-left: 4px solid var(--cyan);
+  border: 1px solid rgba(0, 200, 255, 0.2);
+  border-left: 4px solid var(--cyan);
+  border-radius: 8px;
+  padding: 24px;
+  margin-top: 32px;
+  backdrop-filter: blur(10px);
+}
+
+.bio-fb-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--green);
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+
+.bio-fb-text {
+  font-size: 13px;
+  line-height: 1.8;
+  color: rgba(232, 244, 248, 0.8);
+  margin: 0;
+}
+
+/* ── FOR EVERYONE BANNER ── */
+.for-banner {
+  padding: 80px 56px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.for-h2 {
+  font-family: 'Oxanium', monospace;
+  font-weight: 800;
+  font-size: clamp(42px, 6vw, 72px);
+  line-height: 1.2;
+  margin-bottom: 24px;
+}
+
+.for-h2 .c { color: var(--cyan); }
+.for-h2 .g { color: var(--green); }
+
+.for-sub {
+  font-size: 16px;
+  color: var(--muted);
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* ── WAITLIST SECTION ── */
+.waitlist-section {
+  background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,200,255,0.04) 100%);
+}
+
+.waitlist-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  align-items: start;
+}
+
+.wl-form {
+  margin-top: 32px;
+  opacity: 0;
+}
+
+.wl-form.reveal.on {
+  animation: slideUp 0.8s forwards;
+}
+
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-label {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--white);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.form-input {
+  width: 100%;
+  padding: 12px 16px;
+  background: rgba(0, 200, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--white);
+  font-family: 'Syne', sans-serif;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--cyan);
+  background: rgba(0, 200, 255, 0.1);
+  box-shadow: 0 0 12px rgba(0, 200, 255, 0.2);
+}
+
+.form-submit {
+  width: 100%;
+  padding: 14px 32px;
+  background: linear-gradient(135deg, var(--cyan) 0%, var(--green) 100%);
+  color: var(--bg);
+  border: none;
+  border-radius: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 20px;
+  transition: all 0.2s;
+  box-shadow: 0 0 20px rgba(0, 200, 255, 0.2);
+}
+
+.form-submit:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 200, 255, 0.3);
+}
+
+.form-note {
+  font-size: 11px;
+  color: var(--very-muted);
+  margin-top: 12px;
+  text-align: center;
+}
+
+#success-state {
+  display: none;
+  text-align: center;
+  padding: 32px;
+  background: rgba(0, 255, 157, 0.08);
+  border: 1px solid rgba(0, 255, 157, 0.2);
+  border-radius: 8px;
+  margin-top: 32px;
+}
+
+#success-state.show {
+  display: block;
+  animation: slideUp 0.6s forwards;
+}
+
+.success-icon {
+  display: block;
+  font-size: 48px;
+  margin-bottom: 16px;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+.success-title {
+  font-family: 'Oxanium', monospace;
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--green);
+}
+
+.success-body {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0;
+}
+
+.wl-perks {
+  margin-top: 32px;
+}
+
+.perk-row {
+  display: flex;
+  gap: 20px;
+  padding: 24px;
+  background: rgba(0, 200, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  opacity: 0;
+  animation: slideUp 0.6s forwards;
+}
+
+.perk-row.reveal.on {
+  animation: slideUp 0.6s forwards;
+}
+
+.perk-row.d1 { animation-delay: 0.2s; }
+.perk-row.d2 { animation-delay: 0.3s; }
+.perk-row.d3 { animation-delay: 0.4s; }
+.perk-row.d4 { animation-delay: 0.5s; }
+
+.perk-icon {
+  font-size: 28px;
+  min-width: 40px;
+}
+
+.perk-title {
+  font-family: 'Oxanium', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--white);
+}
+
+.perk-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── FOOTER ── */
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 40px 56px;
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, transparent 0%, rgba(0,200,255,0.03) 100%);
+}
+
+.footer-logo {
+  font-family: 'Oxanium', monospace;
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+
+.footer-links {
+  display: flex;
+  gap: 40px;
+}
+
+.footer-links a {
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.footer-links a:hover {
+  color: var(--cyan);
+}
+
+.footer-copy {
+  font-size: 11px;
+  color: var(--very-muted);
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 768px) {
+  .nav-center { display: none; }
+  .sec-pad { padding: 60px 32px; }
+  .hero { padding: 80px 32px 60px; }
+  .bio-grid { grid-template-columns: 1fr; gap: 40px; padding: 60px 32px; }
+  .waitlist-grid { grid-template-columns: 1fr; gap: 40px; }
+  .features-grid { grid-template-columns: 1fr; }
+  footer { flex-direction: column; gap: 20px; text-align: center; }
+  .footer-links { flex-direction: column; gap: 12px; }
+  .form-row-2 { grid-template-columns: 1fr; }
+  .hero-btns { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div id="cursor"></div>
+<div id="cursor-trail"></div>
+<div class="grid-bg"></div>
+
+<!-- NAV -->
+<nav id="nav">
+  <a href="#" class="logo">
+    <span class="logo-bowl">Bowl</span><span class="logo-fast">Fast</span><span class="logo-dot">.</span><span class="logo-ai">AI</span>
+  </a>
+  <ul class="nav-center">
+    <li><a href="#how">How It Works</a></li>
+    <li><a href="#features">Features</a></li>
+    <li><a href="#biomechanics">Analysis</a></li>
+    <li><a href="#waitlist">Early Access</a></li>
+  </ul>
+  <a href="http://localhost:8501" class="nav-btn">Join Waitlist</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-glow"></div>
+  <div class="hero-glow-2"></div>
+
+  <div class="hero-content">
+    <div class="hero-tag">
+      <span class="hero-tag-pulse"></span>
+      <span>Now Available For Early Access</span>
+    </div>
+
+    <h1 class="hero-h1">
+      <span class="line-1">Real Data.</span>
+      <span class="line-2">Real Coaching.</span>
+      <span class="line-3">Real Results.</span>
+    </h1>
+
+    <p class="hero-p">BowlFast.AI doesn't guess. Every metric comes from computer vision analysis of your actual video — not estimates or generalised averages. What you see is what your body is actually doing.</p>
+
+    <div class="hero-btns">
+      <a href="http://localhost:8501" class="btn btn-primary">🚀 Start Analysis</a>
+      <a href="#how" class="btn btn-secondary">Learn More →</a>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="sec-pad" id="how">
+  <div class="eyebrow reveal">How It Works</div>
+  <h2 class="sec-h2 reveal d1">Upload. Analyze. Improve.</h2>
+  <p style="font-size:16px; line-height:1.8; color:var(--muted); max-width:640px; margin-bottom:32px;" class="reveal d2">
+    BowlFast.AI uses advanced computer vision to analyze every frame of your bowling action. Get instant biomechanical insights and actionable coaching feedback.
+  </p>
+
+  <div class="how-grid">
+    <div class="how-card reveal d1">
+      <h3>🎬 Upload Your Video</h3>
+      <p>Record your fast bowling delivery from any angle. We analyze everything from your run-up to follow-through.</p>
+    </div>
+    <div class="how-card reveal d2">
+      <h3>🤖 AI Analysis</h3>
+      <p>Our computer vision model detects key biomechanical metrics frame-by-frame with frame-level precision.</p>
+    </div>
+    <div class="how-card reveal d3">
+      <h3>💬 Expert Feedback</h3>
+      <p>Receive plain-language coaching feedback with specific drills to address any technical issues we find.</p>
+    </div>
+    <div class="how-card reveal d4">
+      <h3>📊 Track Progress</h3>
+      <p>Compare your metrics over time. See exactly where you've improved and where to focus next.</p>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="sec-pad" id="features">
+  <div class="eyebrow reveal">Key Features</div>
+  <h2 class="sec-h2 reveal d1">Built for Every Fast Bowler</h2>
+
+  <div class="features-grid">
+    <div>
+      <div class="feature-item reveal d1">
+        <h4>🎯 Injury Prevention First</h4>
+        <p>Fast bowlers miss more cricket than any other player type. BowlFast.AI flags the mechanical patterns that lead to lumbar stress fractures, side strains, and knee injuries — before they happen.</p>
+      </div>
+      <div class="feature-item reveal d2">
+        <h4>📏 Frame-Level Precision</h4>
+        <p>Analysis happens at the individual frame level — not averaged across the delivery. You see exactly what your spine, hips, and shoulders are doing at BFC, FFC, and release.</p>
+      </div>
+    </div>
+
+    <div>
+      <div class="feature-item reveal d3">
+        <h4>🗣️ Plain Language Output</h4>
+        <p>No jargon. Every metric comes with a plain-language explanation, a risk rating, and a specific drill to address it — ready to take straight into training.</p>
+      </div>
+      <div class="feature-item reveal d4">
+        <h4>⚡ No Coaching Staff Required</h4>
+        <p>Train like an international player, with or without a coaching team. Just your phone, your action, and the data.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BIOMECHANICS SHOWCASE -->
+<!-- BIOMECHANICS SHOWCASE -->
+<section class="biomechanics-section" id="biomechanics">
+  <div class="bio-grid">
+    <div class="bio-left">
+      <div class="eyebrow reveal">Live Analysis Example</div>
+      <h2 class="bio-h2 reveal d1">See What BowlFast.AI Detects</h2>
+      <p class="bio-p reveal d2">Every delivery gets full biomechanical breakdown. Here's a real example of what your analysis will show:</p>
+
+      <div class="bio-list-item reveal d3">
+        <strong>✓ Injury Prevention First</strong>
+        <p>Fast bowlers miss more cricket than any other player type. BowlFast.AI flags the mechanical patterns that lead to lumbar stress fractures, side strains, and knee injuries — before they happen.</p>
+      </div>
+
+      <div class="bio-list-item reveal d4">
+        <strong>📏 Frame-Level Precision</strong>
+        <p>Analysis happens at the individual frame level — not averaged across the delivery. You see exactly what your spine, hips, and shoulders are doing at BFC, FFC, and release.</p>
+      </div>
+
+      <div class="bio-list-item reveal" style="animation-delay:0.5s">
+        <strong>🗣️ Plain Language Output</strong>
+        <p>No jargon. Every metric comes with a plain-language explanation, a risk rating, and a specific drill to address it — ready to take straight into training.</p>
+      </div>
+
+      <div class="hero-btns reveal d4" style="margin-top: 32px;">
+        <a href="http://localhost:8501" class="btn btn-primary">🚀 Start Analysis</a>
+      </div>
+    </div>
+
+    <div class="bio-right">
+      <div class="bio-metrics reveal d1">
+        <div class="bio-header">// BIOMECHANICAL OUTPUT</div>
+
+        <div class="bio-metric">
+          <div class="bio-m-header">
+            <span class="bio-m-name">Lateral Flexion at Release</span>
+            <span class="bio-m-val warn">42.3°</span>
+          </div>
+          <div class="bio-bar-track"><div class="bio-bar-fill warn" style="width:70%; animation-delay:0.2s;"></div></div>
+        </div>
+
+        <div class="bio-metric">
+          <div class="bio-m-header">
+            <span class="bio-m-name">Hip-Shoulder Separation</span>
+            <span class="bio-m-val ok">38.1°</span>
+          </div>
+          <div class="bio-bar-track"><div class="bio-bar-fill ok" style="width:62%; animation-delay:0.4s;"></div></div>
+        </div>
+
+        <div class="bio-metric">
+          <div class="bio-m-header">
+            <span class="bio-m-name">Arm Extension at Release</span>
+            <span class="bio-m-val ok">162°</span>
+          </div>
+          <div class="bio-bar-track"><div class="bio-bar-fill ok" style="width:90%; animation-delay:0.6s;"></div></div>
+        </div>
+
+        <div class="bio-metric">
+          <div class="bio-m-header">
+            <span class="bio-m-name">Stride Consistency</span>
+            <span class="bio-m-val info">Variable</span>
+          </div>
+          <div class="bio-bar-track"><div class="bio-bar-fill info" style="width:55%; animation-delay:0.8s;"></div></div>
+        </div>
+
+        <div class="bio-metric">
+          <div class="bio-m-header">
+            <span class="bio-m-name">Follow-Through</span>
+            <span class="bio-m-val ok">Good</span>
+          </div>
+          <div class="bio-bar-track"><div class="bio-bar-fill ok" style="width:86%; animation-delay:1.0s;"></div></div>
+        </div>
+
+        <div class="bio-feedback-box">
+          <div class="bio-fb-label">// Coach Feedback</div>
+          <p class="bio-fb-text">
+            ⚠ Moderate lateral flexion at release (42.3°). Recommend wall-lean posture drill and anti-lateral-flexion core holds to reduce lower back load.<br><br>
+            ✓ Follow-through direction is efficient — good weight transfer toward target line.<br><br>
+            → Stride pattern variable: final stride 8% shorter than reference. Work on marker-tape stride consistency drills.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- FOR EVERYONE BANNER -->
+<div class="for-banner reveal">
+  <h2 class="for-h2">
+    From nets to <span class="c">internationals</span> —<br>
+    <span class="g">BowlFast.AI</span> is for every fast bowler<br>on the planet.
+  </h2>
+  <p class="for-sub">No coaching staff required. Just your phone, your action, and the data.</p>
+</div>
+
+<!-- WAITLIST -->
+<section class="sec-pad waitlist-section" id="waitlist">
+  <div class="waitlist-grid">
+    <div>
+      <div class="eyebrow reveal">Early Access</div>
+      <h2 class="sec-h2 reveal d1">Be First<br>In Line.</h2>
+      <p style="margin-top:20px; font-size:15px; line-height:1.85; color:var(--muted);" class="reveal d2">
+        BowlFast.AI is in active development. Join the waitlist to get early access before public launch, shape what we build, and lock in founding member pricing.
+      </p>
+
+      <form class="wl-form reveal d2" id="wl-form" onsubmit="handleSubmit(event)">
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">First Name</label>
+            <input class="form-input" type="text" placeholder="e.g. Jasprit" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last Name</label>
+            <input class="form-input" type="text" placeholder="e.g. Bumrah">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input class="form-input" type="email" placeholder="you@example.com" required>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Club or Academy</label>
+            <input class="form-input" type="text" placeholder="Optional">
+          </div>
+          <div class="form-group">
+            <label class="form-label">I am a...</label>
+            <select class="form-input">
+              <option value="">Select role</option>
+              <option>Player</option>
+              <option>Coach</option>
+              <option>Academy Director</option>
+              <option>Team Manager</option>
+              <option>Parent</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="form-submit">Secure My Spot →</button>
+        <p class="form-note">No spam · No credit card · Early access when we launch</p>
+      </form>
+
+      <div id="success-state">
+        <span class="success-icon">⚡</span>
+        <div class="success-title">You're on the list.</div>
+        <p class="success-body">We'll reach out before launch with your early access details. Tell a fellow fast bowler — the more data we have, the better BowlFast.AI gets.</p>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="font-family:'Oxanium',monospace; font-size:22px; font-weight:700; margin-bottom:8px; margin-top:52px;" class="reveal">What You Get</h3>
+      <p style="font-size:14px; color:var(--muted); margin-bottom:0;" class="reveal d1">Early access perks for waitlist members.</p>
+
+      <div class="wl-perks">
+        <div class="perk-row reveal d1">
+          <span class="perk-icon">⚡</span>
+          <div>
+            <div class="perk-title">First Access</div>
+            <p class="perk-body">Waitlist members get access to the platform before public launch — no queuing, no waiting list at launch day.</p>
+          </div>
+        </div>
+        <div class="perk-row reveal d2">
+          <span class="perk-icon">🎬</span>
+          <div>
+            <div class="perk-title">Free Analysis Credit</div>
+            <p class="perk-body">Every waitlist member gets one complimentary full analysis on launch. Upload a delivery and see exactly what BowlFast.AI can do.</p>
+          </div>
+        </div>
+        <div class="perk-row reveal d3">
+          <span class="perk-icon">💰</span>
+          <div>
+            <div class="perk-title">Founding Member Pricing</div>
+            <p class="perk-body">Lock in a permanently reduced rate — reserved only for people who join before launch. Price increases once we go public.</p>
+          </div>
+        </div>
+        <div class="perk-row reveal d4">
+          <span class="perk-icon">🧪</span>
+          <div>
+            <div class="perk-title">Shape the Roadmap</div>
+            <p class="perk-body">Direct line to the team. Tell us what to build — your feedback from the waitlist directly influences our feature roadmap.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">
+    <span style="color:var(--cyan)">Bowl</span>Fast<span style="color:var(--green)">.</span><span style="color:var(--cyan); font-weight:300;">AI</span>
+  </div>
+  <div class="footer-links">
+    <a href="#how">How It Works</a>
+    <a href="#features">Features</a>
+    <a href="#biomechanics">Analysis</a>
+    <a href="#waitlist">Waitlist</a>
+    <a href="http://localhost:8501">Start Analysis</a>
+  </div>
+  <div class="footer-copy">© 2026 BowlFast.AI · All rights reserved</div>
+</footer>
+
+<script>
+// ── Cursor ──
+const cursor = document.getElementById('cursor');
+const trail = document.getElementById('cursor-trail');
+let mx = 0, my = 0, tx = 0, ty = 0;
+
+document.addEventListener('mousemove', e => {
+  mx = e.clientX; my = e.clientY;
+  cursor.style.left = mx - 4 + 'px';
+  cursor.style.top = my - 4 + 'px';
+});
+
+function animTrail() {
+  tx += (mx - tx) * 0.14;
+  ty += (my - ty) * 0.14;
+  trail.style.left = tx - 16 + 'px';
+  trail.style.top = ty - 16 + 'px';
+  requestAnimationFrame(animTrail);
+}
+animTrail();
+
+document.querySelectorAll('a, button, input, select').forEach(el => {
+  el.addEventListener('mouseenter', () => {
+    cursor.style.transform = 'scale(3)';
+    cursor.style.opacity = '0.5';
+    trail.style.width = '56px';
+    trail.style.height = '56px';
+    trail.style.opacity = '0.2';
+  });
+  el.addEventListener('mouseleave', () => {
+    cursor.style.transform = 'scale(1)';
+    cursor.style.opacity = '1';
+    trail.style.width = '32px';
+    trail.style.height = '32px';
+    trail.style.opacity = '0.5';
+  });
+});
+
+// ── Nav scroll ──
+window.addEventListener('scroll', () => {
+  document.getElementById('nav').classList.toggle('scrolled', window.scrollY > 60);
+});
+
+// ── Scroll reveal ──
+const revEls = document.querySelectorAll('.reveal');
+const io = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); }
+  });
+}, { threshold: 0.1 });
+revEls.forEach(el => io.observe(el));
+
+// ── Form ──
+function handleSubmit(e) {
+  e.preventDefault();
+  document.getElementById('wl-form').style.display = 'none';
+  document.getElementById('success-state').classList.add('show');
+}
+</script>
+
+</body>
+</html>
