@@ -3,3 +3,4 @@ opencv-python-headless
 mediapipe==0.10.20
 numpy
 imageio-ffmpeg
+Pillow
