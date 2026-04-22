@@ -123,6 +123,21 @@ def parse_ffmpeg_fraction(frac: str) -> float:
     den = float(den)
     return num / den if den != 0 else 0.0
 
+def transcode_to_cfr(input_path: str, target_fps: int, out_path: str) -> None:
+    ffmpeg = _ffmpeg_executable("ffmpeg")
+    cmd = [
+        ffmpeg, "-y",
+        "-i", input_path,
+        "-vf", f"fps={target_fps}",
+        "-vsync", "cfr",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"ffmpeg transcode failed:\n{p.stderr}")
 
 def transcode_for_web(input_path: str, out_path: str) -> None:
     ffmpeg = _ffmpeg_executable("ffmpeg")
