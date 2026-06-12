@@ -1,39 +1,22 @@
-<<<<<<< HEAD
-opencv-python-headless
-numpy
-mediapipe
-ultralytics
-torch
-torchvision
-ffmpeg-python
-flask
-flask-cors
-werkzeug
-opencv-python
-mediapipe
-numpy
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
 
-Flask==2.3.3
+flask==2.3.3
 flask-cors==4.0.0
-opencv-python==4.8.1.76
-mediapipe==0.10.3
-numpy==1.24.3
+werkzeug==2.3.7
+
+numpy==1.26.4
+pandas==2.2.2
 Pillow==10.0.0
 
-fastapi
-uvicorn
-python-multipart
-opencv-python-headless
-ultralytics
-torch
-torchvision
-numpy
-pandas
-=======
-streamlit
 opencv-python-headless==4.8.1.78
 mediapipe==0.10.21
-numpy==1.26.4
-imageio-ffmpeg
-Pillow
->>>>>>> 9394f3d62591635485b7fb68a2efe678ab64c333
+ultralytics==8.3.0
+
+torch
+torchvision
+
+ffmpeg-python==0.2.0
+imageio-ffmpeg==0.5.1
+streamlit==1.38.0
