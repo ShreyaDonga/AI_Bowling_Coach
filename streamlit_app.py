@@ -393,11 +393,16 @@ if uploaded_file is not None:
             # ── ANALYSIS SPINNER ──
             with st.spinner("⚡ Analyzing your bowling action... This may take 1-2 minutes"):
                 try:
+                    out_video = outputs_dir / f"{Path(uploaded_file.name).stem}_analysed.mp4"
+                    out_json = outputs_dir / f"{Path(uploaded_file.name).stem}_analysis.json"
+
                     result = analyse_video(
                         video_path=str(temp_path),
-                        output_dir=str(outputs_dir),
+                        out_video=str(out_video),
+                        out_json=str(out_json),
                         bowling_arm=bowling_arm,
-                        bowler_entry_side=bowler_entry_side
+                        entry_side=bowler_entry_side,
+                        ball_model_path="yolov8n.pt"
                     )
                     st.session_state.analysis_result = result
                     st.session_state.analysis_complete = True
