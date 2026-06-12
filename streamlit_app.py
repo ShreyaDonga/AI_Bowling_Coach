@@ -28,7 +28,7 @@ except Exception as mp_error:
 
 # Add backend to path after shim
 try:
-    from backend.analysevideo_web_final import analyze_video
+    from backend.analysevideo_web_final import analyse_video
     ANALYSIS_AVAILABLE = True
 except Exception as import_error:
     ANALYSIS_AVAILABLE = False
@@ -382,8 +382,8 @@ if uploaded_file is not None:
 
     # ── START ANALYSIS BUTTON (MAIN CTA) ──
     st.markdown("<div style='margin: 32px 0;'></div>", unsafe_allow_html=True)
-    analyze_col1, analyze_col2, analyze_col3 = st.columns([1, 2, 1])
-    with analyze_col2:
+    analyse_col1, analyse_col2, analyse_col3 = st.columns([1, 2, 1])
+    with analyse_col2:
         if st.button("🚀 START ANALYSIS", use_container_width=True, key="start_analysis"):
             if not MEDIAPIPE_READY:
                 st.stop()
@@ -393,7 +393,7 @@ if uploaded_file is not None:
             # ── ANALYSIS SPINNER ──
             with st.spinner("⚡ Analyzing your bowling action... This may take 1-2 minutes"):
                 try:
-                    result = analyze_video(
+                    result = analyse_video(
                         video_path=str(temp_path),
                         output_dir=str(outputs_dir),
                         bowling_arm=bowling_arm,
@@ -689,7 +689,7 @@ if st.session_state.get("analysis_complete"):
     st.markdown("<div style='margin: 40px 0;'></div>", unsafe_allow_html=True)
     reset_col1, reset_col2 = st.columns(2)
     with reset_col1:
-        if st.button("🔄 Analyze Another Delivery", use_container_width=True, key="analyze_again"):
+        if st.button("🔄 Analyze Another Delivery", use_container_width=True, key="analyse_again"):
             st.session_state.analysis_complete = False
             st.session_state.analysis_result = {}
             st.rerun()
