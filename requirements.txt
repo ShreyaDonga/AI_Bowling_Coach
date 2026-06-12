@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 opencv-python-headless
 numpy
 mediapipe
@@ -28,3 +29,11 @@ torch
 torchvision
 numpy
 pandas
+=======
+streamlit
+opencv-python-headless==4.8.1.78
+mediapipe==0.10.21
+numpy==1.26.4
+imageio-ffmpeg
+Pillow
+>>>>>>> 9394f3d62591635485b7fb68a2efe678ab64c333
