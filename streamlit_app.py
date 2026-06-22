@@ -396,7 +396,7 @@ if uploaded_file is not None:
                     out_video = outputs_dir / f"{Path(uploaded_file.name).stem}_analysed.mp4"
                     out_json = outputs_dir / f"{Path(uploaded_file.name).stem}_analysis.json"
 
-                    result = analyse_video(
+                    raw_report = analyse_video(
                         video_path=str(temp_path),
                         out_video=str(out_video),
                         out_json=str(out_json),
@@ -404,6 +404,30 @@ if uploaded_file is not None:
                         entry_side=bowler_entry_side,
                         ball_model_path="yolov8n.pt"
                     )
+                    
+                    metrics = {
+                        "run_up_balance_label": raw_report.get("run_up", {}).get("consistency_label", "—"),
+                        "release_label": "Frame " + str(raw_report.get("events", {}).get("RELEASE", {}).get("frame", "—")),
+                        "shoulder_alignment_label": raw_report.get("shoulder_alignment", {}).get("rating", "—"),
+                        "follow_through_label": raw_report.get("follow_through", {}).get("rating", "—"),
+                        "hip_shoulder_separation_ffc_deg": raw_report.get("hip_shoulder_separation", {}).get("at_ffc_deg", "—"),
+                        "events": raw_report.get("events", {}),
+                        **raw_report
+                    }
+                    
+                    coach = {
+                        "feedback": raw_report.get("coach_feedback", []),
+                        "drills": raw_report.get("drills", [])
+                    }
+                    
+                    result = {
+                        "metrics": metrics,
+                        "coach": coach,
+                        "annotated_video_path": str(out_video),
+                        "report_json_path": str(out_json),
+                        "raw_report": raw_report
+                    }
+                    
                     st.session_state.analysis_result = result
                     st.session_state.analysis_complete = True
                     st.success("✓ Analysis complete! Scroll down to see your results.")
@@ -435,8 +459,7 @@ if st.session_state.get("analysis_complete"):
         ("Release Timing", metrics.get("release_label", "—")),
         ("Shoulder Alignment", metrics.get("shoulder_alignment_label", metrics.get("alignment_label", "—"))),
         ("Follow-Through", metrics.get("follow_through_label", "—")),
-        ("Hip-Shoulder Sep.", f"{metrics.get('hip_shoulder_separation_ffc_deg', '—')}°"),
-    ]
+        ("Hip-Shoulder Sep.", "—" if metrics.get("hip_shoulder_separation_ffc_deg") in [None, "—"] else f"{metrics.get('hip_shoulder_separation_ffc_deg'):.1f}°"),    ]
 
     for i, (label, value) in enumerate(metric_data):
         with metric_cols[i]:
